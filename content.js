@@ -271,34 +271,50 @@
 
       const data = chart.data;
       const title = chart.title || "";
+      const chartType = chart.type || "line";
 
       const keys = Object.keys(data[0]).filter((k) => k !== "name");
       if (keys.length === 0) return null;
 
-      // find min/max across all series
-      let min = Infinity;
+      // detect bar chart: explicit type, or categorical names
+      let isBar = chartType === "bar";
+      if (!isBar) {
+        let nonDateCount = 0;
+        for (const d of data) {
+          if (!/^\d{4}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec/i.test(d.name)) nonDateCount++;
+        }
+        if (nonDateCount > data.length / 2) isBar = true;
+      }
+
+      // check if labels are long
+      const maxLabelLen = Math.max(...data.map(d => d.name.length));
+      const rotateLabels = maxLabelLen > 8 || data.length > 8;
+
+      let min = isBar ? 0 : Infinity;
       let max = -Infinity;
       for (const d of data) {
         for (const k of keys) {
           const v = parseFloat(d[k]);
           if (!isNaN(v)) {
-            if (v < min) min = v;
             if (v > max) max = v;
+            if (!isBar && v < min) min = v;
           }
         }
       }
 
-      const padding = (max - min) * 0.15 || 5;
-      min = Math.max(0, min - padding);
-      max = max + padding;
+      if (!isBar) {
+        const padding = (max - min) * 0.15 || 5;
+        min = Math.max(0, min - padding);
+      }
+      max = max * 1.1;
       const range = max - min || 1;
 
       const W = 700;
-      const H = 280;
+      const PB = rotateLabels ? 90 : 60;
+      const H = isBar ? Math.max(280, 220 + data.length * 3) : 280;
       const PL = 55;
       const PR = 20;
       const PT = 40;
-      const PB = 60;
       const chartW = W - PL - PR;
       const chartH = H - PT - PB;
 
@@ -306,46 +322,86 @@
 
       let svg = `<div class="chart-wrap"><svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
 
-      // title
       if (title) {
-        svg += `<text x="${W / 2}" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="#EDEDED">${escapeHtml(title)}</text>`;
+        svg += `<text x="${W / 2}" y="20" text-anchor="middle" font-size="13" font-weight="600" class="chart-title">${escapeHtml(title)}</text>`;
       }
 
-      // y-axis gridlines and labels
+      const isPercent = max <= 100 && keys.some(k => k.toLowerCase().includes("%") || k.toLowerCase().includes("rate") || k.toLowerCase().includes("percent"));
+
+      function formatAxisVal(val) {
+        if (isPercent) return val.toFixed(1) + "%";
+        if (val >= 1000000) return (val / 1000000).toFixed(1) + "M";
+        if (val >= 1000) return (val / 1000).toFixed(1) + "k";
+        return val.toFixed(0);
+      }
+
+      // y-axis
       const yTicks = 5;
       for (let t = 0; t <= yTicks; t++) {
         const val = min + (range * t) / yTicks;
         const y = PT + chartH - (chartH * t) / yTicks;
-        svg += `<line x1="${PL}" y1="${y}" x2="${PL + chartW}" y2="${y}" stroke="#27272A" stroke-width="0.5"/>`;
-        svg += `<text x="${PL - 8}" y="${y + 4}" text-anchor="end" font-size="10" fill="#8E8E93">${val.toFixed(1)}%</text>`;
+        svg += `<line x1="${PL}" y1="${y}" x2="${PL + chartW}" y2="${y}" class="chart-grid" stroke-width="0.5"/>`;
+        svg += `<text x="${PL - 8}" y="${y + 4}" text-anchor="end" font-size="10" class="chart-label">${formatAxisVal(val)}</text>`;
       }
 
-      // x-axis labels
-      for (let d = 0; d < data.length; d++) {
-        const x = PL + (chartW * d) / (data.length - 1 || 1);
-        svg += `<text x="${x}" y="${H - PB + 18}" text-anchor="middle" font-size="9" fill="#8E8E93">${escapeHtml(data[d].name)}</text>`;
-      }
-
-      // lines + dots for each series
-      keys.forEach((key, ki) => {
-        const color = colors[ki % colors.length];
-        let path = "";
-        const dots = [];
+      if (isBar) {
+        const barGroupW = chartW / data.length;
+        const barW = Math.min(barGroupW * 0.6 / keys.length, 40);
+        const barGap = 2;
 
         for (let d = 0; d < data.length; d++) {
+          const groupX = PL + barGroupW * d + barGroupW / 2;
+
+          keys.forEach((key, ki) => {
+            const color = colors[ki % colors.length];
+            const v = parseFloat(data[d][key]);
+            if (isNaN(v)) return;
+            const barH = (chartH * (v - min)) / range;
+            const bx = groupX - (keys.length * (barW + barGap)) / 2 + ki * (barW + barGap);
+            const by = PT + chartH - barH;
+            svg += `<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${barW.toFixed(1)}" height="${barH.toFixed(1)}" rx="2" fill="${color}"/>`;
+          });
+
+          const labelName = escapeHtml(data[d].name);
+          if (rotateLabels) {
+            const truncName = labelName.length > 20 ? labelName.substring(0, 19) + "..." : labelName;
+            svg += `<text x="${groupX}" y="${PT + chartH + 10}" text-anchor="end" font-size="8" class="chart-label" transform="rotate(-45 ${groupX} ${PT + chartH + 10})">${truncName}</text>`;
+          } else {
+            svg += `<text x="${groupX}" y="${PT + chartH + 18}" text-anchor="middle" font-size="9" class="chart-label">${labelName}</text>`;
+          }
+        }
+      } else {
+        // x-axis labels
+        for (let d = 0; d < data.length; d++) {
           const x = PL + (chartW * d) / (data.length - 1 || 1);
-          const v = parseFloat(data[d][key]);
-          if (isNaN(v)) continue;
-          const y = PT + chartH - (chartH * (v - min)) / range;
-          path += (path ? " L" : "M") + ` ${x.toFixed(1)} ${y.toFixed(1)}`;
-          dots.push({ x, y, v });
+          if (rotateLabels) {
+            svg += `<text x="${x}" y="${PT + chartH + 10}" text-anchor="end" font-size="8" class="chart-label" transform="rotate(-45 ${x} ${PT + chartH + 10})">${escapeHtml(data[d].name)}</text>`;
+          } else {
+            svg += `<text x="${x}" y="${H - PB + 18}" text-anchor="middle" font-size="9" class="chart-label">${escapeHtml(data[d].name)}</text>`;
+          }
         }
 
-        svg += `<path d="${path}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`;
-        for (const dot of dots) {
-          svg += `<circle cx="${dot.x.toFixed(1)}" cy="${dot.y.toFixed(1)}" r="3.5" fill="${color}" stroke="#050509" stroke-width="1.5"/>`;
-        }
-      });
+        // lines + dots
+        keys.forEach((key, ki) => {
+          const color = colors[ki % colors.length];
+          let path = "";
+          const dots = [];
+
+          for (let d = 0; d < data.length; d++) {
+            const x = PL + (chartW * d) / (data.length - 1 || 1);
+            const v = parseFloat(data[d][key]);
+            if (isNaN(v)) continue;
+            const y = PT + chartH - (chartH * (v - min)) / range;
+            path += (path ? " L" : "M") + ` ${x.toFixed(1)} ${y.toFixed(1)}`;
+            dots.push({ x, y, v });
+          }
+
+          svg += `<path d="${path}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`;
+          for (const dot of dots) {
+            svg += `<circle cx="${dot.x.toFixed(1)}" cy="${dot.y.toFixed(1)}" r="3.5" fill="${color}" class="chart-dot-stroke" stroke-width="1.5"/>`;
+          }
+        });
+      }
 
       // legend
       const legendY = H - 12;
@@ -366,7 +422,7 @@
 
   // --- HTML page assembly ---
 
-  function buildHtmlPage(title, messages, html2pdfSrc, pdfFilename) {
+  function buildHtmlPage(title, messages, pdfScripts) {
     const now = new Date().toLocaleDateString("en-US", {
       year: "numeric",
       month: "long",
@@ -388,7 +444,6 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' ${html2pdfSrc ? html2pdfSrc : ""}; style-src 'unsafe-inline'; img-src data: blob:;">
 <title>${escapeHtml(title)} — Export</title>
 <style>
   :root {
@@ -405,6 +460,38 @@
     --brand-text: #161617;
     --user-bg: #18181B;
     --assistant-bg: #121217;
+    --thead-bg: #0c0c10;
+    --code-bg: #27272A;
+    --code-color: var(--brand);
+    --pre-bg: var(--bg);
+    --td-border: var(--border);
+    --row-even: var(--bg);
+    --row-odd: var(--surface);
+    --chart-bg: var(--bg);
+  }
+
+  body.light-mode {
+    --bg: #ffffff;
+    --surface: #f4f4f5;
+    --surface-hover: #e4e4e7;
+    --border: #e4e4e7;
+    --border-strong: #d4d4d8;
+    --text: #161617;
+    --text-secondary: #52525B;
+    --text-helper: #71717A;
+    --brand: #5a6416;
+    --brand-hover: #3d4410;
+    --brand-text: #ffffff;
+    --user-bg: #f9fafb;
+    --assistant-bg: #ffffff;
+    --thead-bg: #f9fbe7;
+    --code-bg: #f4f4f5;
+    --code-color: #5a6416;
+    --pre-bg: #fafafa;
+    --td-border: #f4f4f5;
+    --row-even: #fafafa;
+    --row-odd: #ffffff;
+    --chart-bg: #fafafa;
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -441,8 +528,9 @@
     gap: 10px;
   }
   .toolbar-logo {
-    height: 18px;
-    opacity: 0.7;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
   }
 
   .toolbar-actions { display: flex; gap: 8px; }
@@ -471,15 +559,14 @@
     gap: 6px;
     font-family: inherit;
   }
-  .btn:hover { background: #27272A; border-color: var(--border-strong); }
+  .btn:hover { background: var(--surface); border-color: var(--border-strong); color: var(--text); }
   .btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn-primary {
     background: var(--brand);
     border-color: var(--brand);
     color: var(--brand-text);
   }
-  .btn-primary:hover { background: var(--brand-hover); }
-  .btn-primary:disabled { background: var(--brand); }
+  .btn-primary:hover { background: var(--brand-hover); color: var(--brand-text); }
 
   .container {
     max-width: 820px;
@@ -526,7 +613,7 @@
     border-bottom: 1px solid var(--border);
   }
   .assistant-label {
-    background: #0c0c10;
+    background: var(--thead-bg);
     color: var(--brand);
     border-bottom: 1px solid var(--border);
   }
@@ -559,18 +646,18 @@
 
   p { margin: 10px 0; }
 
-  strong { color: #EDEDED; }
+  strong { color: var(--text); }
   em { color: var(--text-secondary); }
   code {
-    background: #27272A;
+    background: var(--code-bg);
     padding: 2px 6px;
     border-radius: 4px;
     font-size: 0.9em;
     font-family: "Roboto Mono", "SF Mono", "Fira Code", monospace;
-    color: var(--brand);
+    color: var(--code-color);
   }
   pre {
-    background: var(--bg);
+    background: var(--pre-bg);
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 16px;
@@ -615,7 +702,7 @@
     min-width: 500px;
   }
   thead {
-    background: #0c0c10;
+    background: var(--thead-bg);
   }
   th {
     padding: 10px 14px;
@@ -630,16 +717,16 @@
   }
   td {
     padding: 9px 14px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--td-border);
     color: var(--text-secondary);
   }
-  tbody tr:nth-child(even) { background: var(--bg); }
-  tbody tr:nth-child(odd) { background: var(--surface); }
+  tbody tr:nth-child(even) { background: var(--row-even); }
+  tbody tr:nth-child(odd) { background: var(--row-odd); }
   tbody tr:hover { background: var(--surface-hover); }
 
   /* Charts */
   .chart-wrap {
-    background: var(--bg);
+    background: var(--chart-bg);
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 16px;
@@ -651,57 +738,68 @@
     height: auto;
     display: block;
   }
+  .chart-title { fill: var(--text); }
+  .chart-label { fill: var(--text-helper); }
+  .chart-grid { stroke: var(--border); }
+  .chart-dot-stroke { stroke: var(--bg); }
 
-  /* Print / PDF styles */
+  .save-tip {
+    max-width: 820px;
+    margin: 0 auto 0;
+    padding: 16px 32px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: 12px;
+    color: var(--text-helper);
+    line-height: 1.5;
+  }
+  .save-tip-title { font-weight: 700; color: var(--text-secondary); margin-bottom: 4px; }
+  .save-tip ul { margin: 0; padding-left: 18px; }
+  .save-tip li { margin: 2px 0; }
+  .save-tip strong { color: var(--text-secondary); }
+
+  /* Print styles */
   @media print {
-    body { background: #fff; color: #161617; }
+    .save-tip { display: none; }
     .toolbar { display: none; }
     .local-notice { display: none; }
     .container { padding: 20px 0; }
-
-    .message { border: 1px solid #e4e4e7; break-inside: avoid; }
-    .role-label { color: #161617; }
-    .user-label { background: #f4f4f5; color: #52525B; border-bottom-color: #e4e4e7; }
-    .assistant-label { background: #f9fbe7; color: #5a6416; border-bottom-color: #e4e4e7; }
-    .user-message .message-body { background: #fafafa; }
-    .assistant-message .message-body { background: #fff; }
-
-    h2 { border-bottom-color: #e4e4e7; }
-    strong { color: #161617; }
-    em { color: #52525B; }
-    code { background: #f4f4f5; color: #5a6416; }
-    pre { background: #fafafa; border-color: #e4e4e7; }
-    pre code { color: #3f3f46; }
-
-    .table-wrap { border-color: #e4e4e7; }
-    thead { background: #f9fbe7; }
-    th { color: #5a6416; border-bottom-color: #d4d4d8; }
-    td { color: #3f3f46; border-bottom-color: #f4f4f5; }
-    tbody tr:nth-child(even) { background: #fafafa; }
-    tbody tr:nth-child(odd) { background: #fff; }
+    .message { break-inside: avoid; }
     tbody tr:hover { background: inherit; }
-
-    .chart-wrap { background: #fafafa; border-color: #e4e4e7; }
-    .chart-wrap text { fill: #3f3f46 !important; }
-    .chart-wrap line { stroke: #e4e4e7 !important; }
-    .chart-wrap circle { stroke: #fff !important; }
   }
 </style>
 </head>
 <body>
 <div class="toolbar">
   <span class="toolbar-title">
-    <svg width="20" height="20" viewBox="0 0 32 32" fill="#D9EE50" xmlns="http://www.w3.org/2000/svg"><circle cx="16" cy="16" r="14" fill="none" stroke="#D9EE50" stroke-width="2"/><circle cx="11" cy="14" r="2" fill="#D9EE50"/><circle cx="21" cy="14" r="2" fill="#D9EE50"/><path d="M10 20 Q16 25 22 20" stroke="#D9EE50" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+    <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAACAklEQVR4AZVSQWsTQRT+ZpN6aNEmogcRygZREyi4gngqZNerSBdvHkRy89CiJ+stelNPCfoDAoLe3AXx4iUG6kE9ZC+SeJBdFPHQ0mYLLZTSTt+bZKeTHkr7YNj3ZuZ979tvPoFD0Vv33RwwLwEfErbaFIgEEO0CzyvFMDHviyzprvuFqT08kwKPcEQIgcYmAV0vhgMNwM2TEm1KHRwvoi0Bj0Esrniy2fxteRX37yzjhv0JV8+GKv/w7o8J4EwBdcWA/tm2JOLs5PWLPt686qu8UCio72Cg2GLhSRmLT8saZW8XnpUbIXHwFLO53W4jCAINxGffiZ3WI495i5TW1IP3BzQdx0Gz2USr1VK5ZviyfwAg4Ytfa77MNvh/zXBdF1JKdDodvXdmegI/4tu6tsyG03Ro2zbiOEa321XUeXHNi/ONdGdsCAMkWVGZnUaSJGox7WwxaCbmzblzZn+UJ2OExPIxVxdnJoGvQK1WUwLW60N9GdDzPJXfvTeju6kvEr0V36WnYBPh1rXP+Pd3S1+oVqtI01QB8PTFpTIWloxn3EbJqpwPv5CajaGsQx0ePLykqLJ4v+OfuDKbx9uPc2PNNL1RuRAmysoxWXmHrCxPYuWUrFwaWblEnp4gb2smRwRPzppHpMej99+3xSnUSVxmoxhJfimJMGeJ8HIx6Jj39wGDo8pPY7CpggAAAABJRU5ErkJggg==" width="16" height="16" alt="" class="toolbar-logo">
     Smart Analyst Export
   </span>
   <div class="toolbar-actions">
+    <button class="btn" id="theme-toggle-btn">
+      <svg id="theme-icon-sun" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      <svg id="theme-icon-moon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+      <span id="theme-label">Light Mode</span>
+    </button>
+    <button class="btn" id="download-html-btn">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Save HTML
+    </button>
     <button class="btn btn-primary" id="download-pdf-btn" disabled>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-      <span id="pdf-btn-label">Loading...</span>
+      <span id="pdf-btn-label">Loading PDF...</span>
     </button>
   </div>
 </div>
-<div class="local-notice">This preview is local to your browser. Nothing is uploaded or shared.</div>
+<div class="local-notice">This preview is local to your browser. Nothing is uploaded or shared. Do not refresh — the preview cannot be restored.</div>
+<div class="save-tip" id="save-tip" style="display:none">
+  <div class="save-tip-title">Need a different format?</div>
+  <ul>
+    <li><strong>PDF:</strong> Use <strong>Ctrl+P</strong> (Windows) or <strong>Cmd+P</strong> (Mac), then choose <strong>Save as PDF</strong> as the destination</li>
+    <li><strong>Word / Google Docs:</strong> Select all (<strong>Ctrl+A</strong> / <strong>Cmd+A</strong>), copy, and paste into a new document</li>
+  </ul>
+</div>
 <div class="container" id="export-content">
   <div class="export-header">
     <h1>${escapeHtml(title)}</h1>
@@ -709,67 +807,109 @@
   </div>
   ${bodyContent}
 </div>
-${html2pdfSrc ? `<script src="${html2pdfSrc}"><\\/script>` : ""}
+${pdfScripts ? "<script>" + pdfScripts + "<" + "/script>" : ""}
 <script>
 (function() {
-  var filename = ${JSON.stringify(pdfFilename)};
-  var btn = document.getElementById("download-pdf-btn");
-  var label = document.getElementById("pdf-btn-label");
+  window.addEventListener("beforeunload", function(e) {
+    e.preventDefault();
+    e.returnValue = "";
+  });
 
-  function ready() {
-    label.textContent = "Download PDF";
-    btn.disabled = false;
+  var themeBtn = document.getElementById("theme-toggle-btn");
+  var sunIcon = document.getElementById("theme-icon-sun");
+  var moonIcon = document.getElementById("theme-icon-moon");
+  var themeLabel = document.getElementById("theme-label");
+  themeBtn.addEventListener("click", function() {
+    var isLight = document.body.classList.toggle("light-mode");
+    sunIcon.style.display = isLight ? "none" : "";
+    moonIcon.style.display = isLight ? "" : "none";
+    themeLabel.textContent = isLight ? "Dark Mode" : "Light Mode";
+  });
+
+  document.getElementById("download-html-btn").addEventListener("click", function() {
+    var toolbar = document.querySelector(".toolbar");
+    var notice = document.querySelector(".local-notice");
+    var saveTip = document.getElementById("save-tip");
+    var wasLight = document.body.classList.contains("light-mode");
+
+    toolbar.style.display = "none";
+    notice.style.display = "none";
+    if (saveTip) saveTip.style.display = "";
+    if (!wasLight) document.body.classList.add("light-mode");
+
+    var clone = document.documentElement.cloneNode(true);
+    var scripts = clone.querySelectorAll("script");
+    scripts.forEach(function(s) { s.remove(); });
+
+    var html = "<!DOCTYPE html>" + clone.outerHTML;
+
+    toolbar.style.display = "";
+    notice.style.display = "";
+    if (saveTip) saveTip.style.display = "none";
+    if (!wasLight) document.body.classList.remove("light-mode");
+
+    var blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = document.title.replace(" — Export", "") + ".html";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+
+  var pdfBtn = document.getElementById("download-pdf-btn");
+  var pdfLabel = document.getElementById("pdf-btn-label");
+
+  function pdfReady() {
+    return typeof pdfMake !== "undefined" && typeof vfs !== "undefined" && typeof buildPdfDefinition !== "undefined";
   }
 
-  if (typeof html2pdf !== "undefined") {
-    ready();
+  if (pdfReady()) {
+    pdfLabel.textContent = "Save PDF";
+    pdfBtn.disabled = false;
   } else {
     var check = setInterval(function() {
-      if (typeof html2pdf !== "undefined") { clearInterval(check); ready(); }
-    }, 100);
-    setTimeout(function() { clearInterval(check); label.textContent = "PDF unavailable"; }, 5000);
+      if (pdfReady()) {
+        clearInterval(check);
+        pdfLabel.textContent = "Save PDF";
+        pdfBtn.disabled = false;
+      }
+    }, 200);
+    setTimeout(function() { clearInterval(check); if (pdfBtn.disabled) pdfLabel.textContent = "PDF unavailable"; }, 10000);
   }
 
-  btn.addEventListener("click", function() {
-    if (btn.disabled) return;
-    label.textContent = "Generating...";
-    btn.disabled = true;
+  pdfBtn.addEventListener("click", function() {
+    if (pdfBtn.disabled) return;
+    pdfLabel.textContent = "Generating...";
+    pdfBtn.disabled = true;
 
-    var el = document.getElementById("export-content");
+    try {
+      pdfMake.vfs = vfs;
 
-    html2pdf()
-      .set({
-        margin: [12, 10, 12, 10],
-        filename: filename,
-        html2canvas: { scale: 2, useCORS: false, logging: false },
-        jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
-        pagebreak: { mode: ["avoid-all", "css", "legacy"] }
-      })
-      .from(el)
-      .save()
-      .then(function() {
-        label.textContent = "Download PDF";
-        btn.disabled = false;
-      })
-      .catch(function() {
-        label.textContent = "Error - retry";
-        btn.disabled = false;
+      var title = document.querySelector(".export-header h1").textContent;
+      var msgs = window.__exportMessages;
+      var dateStr = document.querySelector(".export-header .meta").textContent.replace("Exported on ", "");
+      var docDef = buildPdfDefinition(title, msgs, dateStr);
+      var filename = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) + ".pdf";
+
+      pdfMake.createPdf(docDef).download(filename, function() {
+        pdfLabel.textContent = "Save PDF";
+        pdfBtn.disabled = false;
       });
+    } catch(e) {
+      pdfLabel.textContent = "Error - retry";
+      pdfBtn.disabled = false;
+    }
   });
 })();
-<\\/script>
+<` + `/script>
 </body>
 </html>`;
   }
 
   // --- Export handler ---
-
-  function getHtml2PdfUrl() {
-    if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) {
-      return chrome.runtime.getURL("html2pdf.bundle.min.js");
-    }
-    return "";
-  }
 
   function slugify(str) {
     return str
@@ -779,7 +919,30 @@ ${html2pdfSrc ? `<script src="${html2pdfSrc}"><\\/script>` : ""}
       .slice(0, 60);
   }
 
-  function handleExportClick() {
+  async function fetchExtFile(filename) {
+    try {
+      const url = chrome.runtime.getURL(filename);
+      const resp = await fetch(url);
+      return await resp.text();
+    } catch {
+      return "";
+    }
+  }
+
+  let pdfScriptsCache = null;
+
+  async function loadPdfScripts() {
+    if (pdfScriptsCache !== null) return pdfScriptsCache;
+    const [pdfmakeCode, vfsCode, builderCode] = await Promise.all([
+      fetchExtFile("pdfmake.min.js"),
+      fetchExtFile("vfs_fonts.js"),
+      fetchExtFile("pdf-builder.js"),
+    ]);
+    pdfScriptsCache = pdfmakeCode + "\n" + vfsCode + "\n" + builderCode;
+    return pdfScriptsCache;
+  }
+
+  async function handleExportClick() {
     const title = getChatTitle();
     const messages = extractMessages();
 
@@ -788,23 +951,29 @@ ${html2pdfSrc ? `<script src="${html2pdfSrc}"><\\/script>` : ""}
       return;
     }
 
-    const html2pdfSrc = getHtml2PdfUrl();
-    const pdfFilename = slugify(title) + ".pdf";
-    const html = buildHtmlPage(title, messages, html2pdfSrc, pdfFilename);
-    const tab = window.open("about:blank", "_blank");
+    const pdfScripts = await loadPdfScripts();
+    const messagesJson = "window.__exportMessages = " + JSON.stringify(messages) + ";";
+    const html = buildHtmlPage(title, messages, pdfScripts + "\n" + messagesJson);
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const tab = window.open(url, "_blank");
     if (!tab) {
       alert("Pop-up blocked. Please allow pop-ups for this site and try again.");
-      return;
     }
-    tab.document.open();
-    tab.document.write(html);
-    tab.document.close();
   }
 
   // --- Menu injection ---
 
+  function isActiveChat() {
+    const pressedBtn = document.querySelector('[data-test-id="chat-history-item-menu-btn"][data-pressed]');
+    if (!pressedBtn) return false;
+    const chatItem = pressedBtn.closest('[data-test-id="chat-history-active-item"]');
+    return !!chatItem;
+  }
+
   function injectExportButton(menu) {
     if (menu.querySelector("[data-export-btn]")) return;
+    if (!isActiveChat()) return;
 
     const renameItem = menu.querySelector(RENAME_SELECTOR);
     if (!renameItem) return;
@@ -816,35 +985,22 @@ ${html2pdfSrc ? `<script src="${html2pdfSrc}"><\\/script>` : ""}
     exportItem.className = renameItem.className;
     exportItem.textContent = "Export";
 
-    exportItem.addEventListener("mouseenter", () => {
-      exportItem.setAttribute("data-highlighted", "");
-    });
-    exportItem.addEventListener("mouseleave", () => {
-      exportItem.removeAttribute("data-highlighted");
-    });
-
+    exportItem.addEventListener("mouseenter", () => exportItem.setAttribute("data-highlighted", ""));
+    exportItem.addEventListener("mouseleave", () => exportItem.removeAttribute("data-highlighted"));
     exportItem.addEventListener("click", (e) => {
       e.stopPropagation();
       handleExportClick();
-
-      menu.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key: "Escape",
-          bubbles: true,
-          cancelable: true,
-        })
-      );
+      menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     });
 
     const separator = menu.querySelector('[role="separator"]');
     if (separator) {
-      separator.before(exportItem);
-
       const newSep = document.createElement("div");
       newSep.setAttribute("data-orientation", "horizontal");
       newSep.setAttribute("role", "separator");
       newSep.setAttribute("aria-orientation", "horizontal");
       newSep.className = separator.className;
+      separator.before(exportItem);
       separator.before(newSep);
     } else {
       renameItem.after(exportItem);

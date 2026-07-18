@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Smart Analyst Export",
-  "version": "1.2.0",
-  "description": "Export PolyAI Smart Analyst chats to styled PDF",
+  "version": "1.5.0",
+  "description": "Export PolyAI Smart Analyst chats to PDF or HTML",
   "permissions": [],
   "content_scripts": [
     {
@@ -13,7 +13,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["html2pdf.bundle.min.js"],
+      "resources": ["pdfmake.min.js", "vfs_fonts.js", "pdf-builder.js"],
       "matches": ["<all_urls>"]
     }
   ],
